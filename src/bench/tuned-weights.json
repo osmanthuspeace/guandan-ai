@@ -1,0 +1,16 @@
+{
+  "ev": {
+    "perHand": -5,
+    "perSingle": -3,
+    "smallSingle": -2,
+    "perBomb": 25,
+    "perControl": 8
+  },
+  "aw": {
+    "finish": 150,
+    "beatPartner": -240,
+    "intercept": 30,
+    "passPartner": 60,
+    "passDanger": -360
+  }
+}

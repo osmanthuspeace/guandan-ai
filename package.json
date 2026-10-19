@@ -1,0 +1,24 @@
+{
+  "name": "guandan-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "掼蛋游戏 AI（OpenGuanDan 平台客户端）",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:web": "npm --prefix web run build",
+    "dev:web": "npm --prefix web run dev",
+    "smoke": "tsx src/smoke.ts",
+    "bench": "tsx src/bench/bench.ts",
+    "server": "npm run build && tsx src/ui/server.ts"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
