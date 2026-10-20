@@ -22,6 +22,7 @@ const post = (m: Record<string, unknown>) => parentPort!.postMessage(m);
 
 async function main() {
   let hands: Record<number, string[]> = {};
+  let dealt = new Set<number>(); // 本局已上报手牌的座位
   let rests = [27, 27, 27, 27];
   let finished: number[] = [];
   let episode = 0;
@@ -29,21 +30,31 @@ async function main() {
   const logLine = (text: string) => post({ kind: "log", text });
 
   const onEvent = (seat: number) => (msg: Record<string, unknown>) => {
+    // act 请求里带权威的 selfRank/oppoRank（beginning 通知里没有），在座0连接上同步
+    if (msg.type === "act") {
+      if (seat === 0) {
+        if (msg.selfRank) selfRank = msg.selfRank as string;
+        if (msg.oppoRank) oppoRank = msg.oppoRank as string;
+      }
+      return;
+    }
     if (msg.type !== "notify") return;
     const stage = msg.stage as string;
     if (stage === "beginning") {
-      if (seat === 0) {
-        hands = {};
-        selfRank = (msg.selfRank as string) ?? selfRank;
-        oppoRank = (msg.oppoRank as string) ?? oppoRank;
-      }
+      // 服务端向四条连接广播同一事件流：单连接内严格有序，跨连接到达无序。
+      // 局号/等级/局头只以座0连接为权威推进（否则跨连接竞态会导致局头重复、
+      // 局号漂移、等级显示过时）；手牌每家只发自己的，仍需四连接拼齐仅供展示。
       hands[seat] = msg.handCards as string[];
-      if (Object.keys(hands).length === 4) {
+      dealt.add(seat);
+      if (seat === 0) {
         episode++;
         finished = [];
-        rests = [0, 1, 2, 3].map((s) => hands[s].length);
-        post({ kind: "start", hands: { ...hands }, episode, selfRank, oppoRank });
+        rests = [27, 27, 27, 27];
         logLine(fmtEpisodeStart(episode, selfRank, oppoRank));
+      }
+      if (dealt.size === 4) {
+        post({ kind: "start", hands: { ...hands }, episode, selfRank, oppoRank });
+        dealt = new Set();
       }
     } else if (stage === "play" && seat === 0) {
       // 出牌通知四家都会收到，只取 0 号连接的去重

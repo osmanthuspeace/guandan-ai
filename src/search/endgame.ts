@@ -9,7 +9,7 @@
  */
 import {
   Action, CardLabel, GameState, Policy, TrackerView,
-  isBombLike, isPass, rankOf, rankValue,
+  isBombLike, isPass, rankOf, rankValue, removeCards,
 } from "../types.js";
 import { groupByRank } from "../policy/patterns.js";
 
@@ -154,8 +154,7 @@ export function search(
   let best = isMine ? -Infinity : Infinity;
   for (const m of moves) {
     const ns: SimState = {
-      hands: s.hands.map((h, i) =>
-        i === me ? h.filter((c) => !m[2].includes(c)) : h),
+      hands: s.hands.map((h, i) => (i === me ? removeCards(h, m[2]) : h)),
       turn: me, greater: s.greater, greaterPos: s.greaterPos,
       passCount: s.passCount, order: [...s.order],
     };
@@ -245,7 +244,7 @@ export class EndgameSearch implements Policy {
         const a = actions[i];
         const sim: SimState = {
           hands: hands.map((h, seat) =>
-            seat === state.myPos ? h.filter((c) => !a[2].includes(c)) : h),
+            seat === state.myPos ? removeCards(h, a[2]) : h),
           turn: state.myPos, greater: state.greaterAction, greaterPos: state.greaterPos,
           passCount: 0, order: [...state.finished],
         };

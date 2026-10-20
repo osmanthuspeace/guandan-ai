@@ -30,6 +30,16 @@ check("组牌缓存命中", arrange(hand, "2", ev) === arr);
 const aHighArr = arrange(["ST", "HJ", "CQ", "DK", "SA", "S2", "H3"], "7", ev);
 const aHighStraight = aHighArr.groups.find((g) => g.pattern === "Straight");
 check("组牌可组成10JQKA", aHighStraight !== undefined && aHighStraight.rank === "A");
+// 天然同花顺应被识别为 StraightFlush 且计入炸弹
+const sfArr = arrange(["S5", "S6", "S7", "S8", "S9", "H3", "D4"], "2", ev);
+check("组牌识别天然同花顺", sfArr.groups.some((g) => g.pattern === "StraightFlush" && g.rank === "9")
+  && sfArr.bombCount >= 1);
+// 逢人配补同花顺：C6-C9 + 红桃级牌(万能) = C5-C9 同花顺
+const sfWildArr = arrange(["H5", "C6", "C7", "C8", "C9", "D3", "DJ"], "5", ev);
+check("逢人配可补同花顺", sfWildArr.groups.some((g) => g.pattern === "StraightFlush"));
+// 8 张同点应组成一个 8 张炸
+const bomb8 = arrange(["S9", "S9", "H9", "H9", "C9", "C9", "D9", "D9", "S3", "H4"], "2", ev);
+check("8张同点组一枚8炸", bomb8.groups.some((g) => g.pattern === "Bomb" && g.cards.length === 8));
 
 // --- 牌理决策 ---
 function makeState(handCards: string[], actions: Action[], greaterPos = -1): GameState {

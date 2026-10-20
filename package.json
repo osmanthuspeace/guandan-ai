@@ -10,6 +10,8 @@
     "dev:web": "npm --prefix web run dev",
     "smoke": "tsx src/smoke.ts",
     "bench": "tsx src/bench/bench.ts",
+    "bot": "tsx src/bot.ts",
+    "match": "tsx src/bench/match.ts",
     "server": "npm run build && tsx src/ui/server.ts"
   },
   "dependencies": {

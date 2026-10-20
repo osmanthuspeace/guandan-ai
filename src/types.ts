@@ -71,6 +71,22 @@ export function isBombLike(a: Action): boolean {
   return a[0] === "Bomb" || a[0] === "FourKings" || a[0] === "StraightFlush";
 }
 
+/**
+ * 从 hand 中按多重集合扣除 played：两副牌存在同名牌（如两张 "S5"），
+ * 用 Set 过滤会把所有同名牌一起删掉，必须按出现次数逐个扣。
+ */
+export function removeCards(hand: CardLabel[], played: CardLabel[]): CardLabel[] {
+  const counts = new Map<CardLabel, number>();
+  for (const c of played) counts.set(c, (counts.get(c) ?? 0) + 1);
+  const res: CardLabel[] = [];
+  for (const c of hand) {
+    const n = counts.get(c) ?? 0;
+    if (n > 0) counts.set(c, n - 1);
+    else res.push(c);
+  }
+  return res;
+}
+
 // ---------------------------------------------------------------------------
 // 组法（Arrangement）：B 定义结构，A 的 Evaluator 对其打分
 // ---------------------------------------------------------------------------
@@ -178,10 +194,26 @@ export interface ActionWeights {
   passDanger: number;   // 对手 ≤2 张且非队友领先时 PASS 的惩罚（负值）
 }
 
+// 动作权重与 Evaluator 组法分同量纲，量级由"Δ 上下界"推导——
+//   Δ = score(出后剩余手牌) − score(当前手牌)，即一手牌对牌结构的净改变：
+//   Δ ≤ +50：每出 1 张最多消除 手数5+单牌3+小单2 = 10 分负担，一手至多 5~8 张；
+//   Δ ≥ -50：拆一枚 4 炸 -25，附带损失控制牌 -8/张；
+//   组法分绝对上界 ≈ +140（27 张近乎全炸+全控的理论极值）。
+// 各项均为"阈值型"取值：超过推导阈值后行为不变，统一取 2~6 倍余量的整数；
+// 可用 bench/tuneEval.ts（DIMS 已含 aw.*）以胜率实测继续微调。
 export const DEFAULT_ACTION_WEIGHTS: ActionWeights = {
-  finish: 150,
+  // 出完=终局事件，须严格大于一切非终局得分：组法分上界140 + 拦截满分150 ≈ 290，
+  // 取 500 留 1.7 倍余量（旧值 150 理论上会被"高分手牌+拦截"反超）。
+  finish: 500,
+  // 非出完不压队友 ⟺ Δ < |beatPartner| − passPartner；Δ≤50 故阈值 110 即够，
+  // 取 -240 留 2 倍余量（再大行为不变）。
   beatPartner: -240,
+  // 对手剩 5 张时 +30 ≈ 干净压牌收益(+5~15) 的 2 倍：只压不亏结构的；
+  // 剩 3 张时 +90 > |Δ下界|：结构小亏也压；剩 ≤2 张与 passDanger 叠加强制压。
   intercept: 30,
+  // 队友领先时的让牌奖励，只需 ≫ 干净压牌常见收益(+5~15)，取 4 倍。
   passPartner: 60,
+  // 对手 ≤2 张时令 PASS 恒劣于任何压牌：须 > |Δ下界| + intercept(剩2) = 50+120 = 170，
+  // 取 -360 留 2 倍余量。
   passDanger: -360,
 };

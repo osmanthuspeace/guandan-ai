@@ -6,7 +6,7 @@
  */
 import {
   Arrangement, CardLabel, Evaluator, HandGroup,
-  SEQ_VALUE, isWild, rankOf, suitOf,
+  SEQ_VALUE, SUITS, isWild, rankOf, suitOf,
 } from "../types.js";
 import { countControls } from "./evaluate.js";
 import { groupByRank } from "./patterns.js";
@@ -23,19 +23,30 @@ function takeRank(pool: Pool, rank: string, n: number): CardLabel[] {
   return take;
 }
 
+/** 从某点数中拿指定花色的那张牌（同花顺专用） */
+function takeSuit(pool: Pool, rank: string, suit: string): CardLabel | null {
+  const arr = pool.byRank.get(rank) ?? [];
+  const i = arr.findIndex((c) => suitOf(c) === suit);
+  if (i < 0) return null;
+  const [c] = arr.splice(i, 1);
+  if (arr.length === 0) pool.byRank.delete(rank);
+  return c;
+}
+
+function isBombGroup(g: HandGroup): boolean {
+  return g.pattern === "Bomb" || g.pattern === "StraightFlush" || g.pattern === "FourKings";
+}
+
 function buildArrangement(groups: HandGroup[], level: string): Arrangement {
   const singles = groups.filter((g) => g.pattern === "Single").flatMap((g) => g.cards);
-  const bombs = groups.filter(
-    (g) => g.pattern === "Bomb" || g.pattern === "StraightFlush" || g.pattern === "FourKings",
-  );
-  const all = groups.flatMap((g) => g.cards);
+  const bombs = groups.filter(isBombGroup);
   return {
     groups,
     handsCount: groups.length,
     singles,
     bombCount: bombs.length,
     controlCount: countControls(
-      singles.concat(groups.filter((g) => g.pattern !== "Bomb").flatMap((g) => g.cards)),
+      singles.concat(groups.filter((g) => !isBombGroup(g)).flatMap((g) => g.cards)),
       level,
     ),
   };
@@ -71,8 +82,50 @@ function tryExtractStraight(pool: Pool): HandGroup | null {
   return null;
 }
 
+/** 在 pool 中尝试抽一条同花顺（可用至多 2 张万能牌补缺，优先补缺少的窗口） */
+function tryExtractStraightFlush(pool: Pool): HandGroup | null {
+  for (const suit of SUITS) {
+    // 该花色：连续值 -> 牌（A 双身份登记 1 和 14；王不参与顺子）
+    const byVal = new Map<number, { rank: string }>();
+    for (const [rank, cards] of pool.byRank) {
+      if (!cards.some((c) => suitOf(c) === suit)) continue;
+      const v = SEQ_VALUE[rank];
+      if (v === undefined) continue;
+      if (rank === "A") { byVal.set(1, { rank }); byVal.set(14, { rank }); } else byVal.set(v, { rank });
+    }
+    let best: { lo: number; miss: number } | null = null;
+    for (let lo = 1; lo <= 10; lo++) {
+      let miss = 0;
+      for (let v = lo; v < lo + 5; v++) if (!byVal.has(v)) miss++;
+      if (miss <= Math.min(2, pool.wilds.length) && (!best || miss < best.miss)) {
+        best = { lo, miss };
+      }
+    }
+    if (!best) continue;
+    const cards: CardLabel[] = [];
+    let topRank = "";
+    for (let v = best.lo; v < best.lo + 5; v++) {
+      const e = byVal.get(v);
+      if (!e) continue;
+      const c = takeSuit(pool, e.rank, suit);
+      if (c) { cards.push(c); topRank = e.rank; }
+    }
+    for (let i = 0; i < best.miss; i++) cards.push(pool.wilds.pop()!);
+    return { pattern: "StraightFlush", rank: topRank, cards };
+  }
+  return null;
+}
+
+/** 连续抽同花顺，直到抽不出为止 */
+function extractStraightFlushes(pool: Pool, groups: HandGroup[]): void {
+  let g = tryExtractStraightFlush(pool);
+  let guard = 0;
+  while (g && guard++ < 4) { groups.push(g); g = tryExtractStraightFlush(pool); }
+}
+
 /** 贪心组牌的可调行为：不同取值组合产出不同候选组法，交给 Evaluator 比选 */
 interface GreedyOptions {
+  straightFlush?: boolean;       // 是否优先组同花顺（默认 true）
   preferStraight?: boolean;      // 是否抽顺子（默认 true）
   straightLate?: boolean;        // 顺子放到三张/对子之后兜底抽（默认 false：炸后即抽，保顺子）
   wildBomb?: boolean;            // 逢人配优先补炸弹（默认 true；false 则留给顺子/配大单）
@@ -89,7 +142,7 @@ function extractStraights(pool: Pool, groups: HandGroup[]): void {
 /** 贪心组一版：优先炸弹，其余顺序由 opts 决定 */
 function greedyArrange(hand: CardLabel[], level: string, opts: GreedyOptions): Arrangement {
   const {
-    preferStraight = true, straightLate = false,
+    straightFlush = true, preferStraight = true, straightLate = false,
     wildBomb = true, bigPairWithTrips = false,
   } = opts;
   const pool: Pool = {
@@ -110,6 +163,8 @@ function greedyArrange(hand: CardLabel[], level: string, opts: GreedyOptions): A
       groups.push({ pattern: "Bomb", rank: r, cards: takeRank(pool, r, arr.length) });
     }
   }
+  // 2.5 同花顺（含万能补位）：先于万能补炸——同花顺(55) > 5炸(50) > 4炸(40)
+  if (straightFlush) extractStraightFlushes(pool, groups);
   // 3. 万能牌补炸弹：三张 + 1 万能 = 4 炸（最赚的位置）
   if (wildBomb && pool.wilds.length > 0) {
     for (const [r, arr] of [...pool.byRank.entries()].sort(
@@ -187,7 +242,7 @@ function cacheKey(hand: CardLabel[], level: string, ev: Evaluator): string {
 }
 
 /**
- * 生成 5 套候选组法（顺子优先 / 不顺子 / 顺子兜底 / 逢人配不补炸 / 三带二配大对），
+ * 生成 6 套候选组法（顺子优先 / 不顺子 / 顺子兜底 / 逢人配不补炸 / 三带二配大对 / 不组同花顺），
  * 用 Evaluator 比选返回最优组法；结果按 (手牌, 等级, 权重) 缓存。
  */
 export function arrange(hand: CardLabel[], level: string, evaluator: Evaluator): Arrangement {
@@ -201,6 +256,7 @@ export function arrange(hand: CardLabel[], level: string, evaluator: Evaluator):
     { preferStraight: true, straightLate: true },
     { preferStraight: true, wildBomb: false },
     { preferStraight: true, bigPairWithTrips: true },
+    { preferStraight: true, straightFlush: false },
   ];
   const candidates = variants.map((o) => greedyArrange(hand, level, o));
 
