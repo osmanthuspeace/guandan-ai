@@ -1,4 +1,7 @@
 node_modules/
 dist/
 .server-run/
-OpenGuanDan/
+OpenGuanDan/logs/
+logs/
+report/
+doc/bench/

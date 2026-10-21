@@ -1,21 +1,29 @@
 /**
  * 末局搜索（成员 C）。
- * 三步：猜牌（按剩余牌分布采样对手手牌）→ 每种假设下推算到底
- * （我选最好、对手按最坏、队友按配合；剪枝砍掉没必要算的分支）→ 得票最高者定案。
+ * 三步：猜牌（约束采样：历史 PASS 推断的持牌上限过滤）
+ * → 每种假设下拟人 rollout 到底（每个座位都用牌理同款评分器从自己的视角选招）
+ * → 得票最高者定案。
  *
- * 简化假设（已在报告候选中声明）：
- * - 模拟器只生成 单/对/三张/三带二/炸弹/四王 动作，不生成顺子类长牌型（控制分支因子）；
- * - 接风规则简化为：领先者已出完时由其下家顺时针领出。
+ * 简化假设：
+ * - 模拟器只生成 单/对/三张/三带二/炸弹/四王，不生成顺子类长牌型（控制分支因子）；
+ * - 逢人配在模拟中按原点数参与，不展开配牌可能。
  */
 import {
-  Action, CardLabel, GameState, Policy, TrackerView,
-  isBombLike, isPass, rankOf, rankValue, removeCards,
+  Action, ActionWeights, CardLabel, GameState, Policy, TrackerView,
+  DEFAULT_ACTION_WEIGHTS,
+  isPass, rankValue, removeCards,
 } from "../types.js";
 import { groupByRank } from "../policy/patterns.js";
+import { HandEvaluator } from "../policy/evaluate.js";
+import { scorePlayAction } from "../policy/actionEval.js";
+import { countViolations, extractCaps } from "./constraints.js";
 
 // ---------------------------------------------------------------------------
-// 采样：把未见牌随机分给其他三家（按各自剩余张数）
+// 采样：把未见牌分给其他三家（按各自剩余张数）。
+// 有历史 PASS 约束时做拒绝采样：最多重试若干次，取违反约束最少的分法。
 // ---------------------------------------------------------------------------
+
+const SAMPLE_TRIES = 40;
 
 function shuffle<T>(arr: T[], rng: () => number): T[] {
   const a = [...arr];
@@ -29,17 +37,29 @@ function shuffle<T>(arr: T[], rng: () => number): T[] {
 export function sampleHands(
   state: GameState, tracker: TrackerView, rng: () => number = Math.random,
 ): CardLabel[][] {
-  const unseen = shuffle(tracker.unseenCards([]), rng);
-  const hands: CardLabel[][] = [[], [], [], []];
-  hands[state.myPos] = [...state.handCards];
-  let idx = 0;
-  for (let seat = 0; seat < 4; seat++) {
-    if (seat === state.myPos) continue;
-    const need = state.publicInfo[seat].rest;
-    hands[seat] = unseen.slice(idx, idx + need);
-    idx += need;
+  const pool = tracker.unseenCards([]);
+  const caps = extractCaps(state);
+  const constrained = caps.some(Boolean);
+  let best: CardLabel[][] | null = null;
+  let bestBad = Infinity;
+
+  for (let t = 0; t < (constrained ? SAMPLE_TRIES : 1); t++) {
+    const unseen = shuffle(pool, rng);
+    const hands: CardLabel[][] = [[], [], [], []];
+    hands[state.myPos] = [...state.handCards];
+    let idx = 0;
+    for (let seat = 0; seat < 4; seat++) {
+      if (seat === state.myPos) continue;
+      const need = state.publicInfo[seat].rest;
+      hands[seat] = unseen.slice(idx, idx + need);
+      idx += need;
+    }
+    if (!constrained) return hands;
+    const bad = countViolations(hands, caps, state.curRank, state.myPos);
+    if (bad === 0) return hands;
+    if (bad < bestBad) { bestBad = bad; best = hands; }
   }
-  return hands;
+  return best!; // 约束互相打架时取违约最少的分法（best-effort）
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +124,7 @@ export function genMoves(hand: CardLabel[], level: string, greater: Action | nul
 }
 
 // ---------------------------------------------------------------------------
-// 推算：我选最好、对手按最坏、队友按配合（paranoid 化简 + alpha-beta 剪枝）
+// 推算：拟人 rollout（PIMC）——所有座位用同一套牌理评分器选招，推演到底
 // ---------------------------------------------------------------------------
 
 interface SimState {
@@ -118,11 +138,16 @@ interface SimState {
 
 function payoff(order: number[], rootPos: number): number {
   const partner = (rootPos + 2) % 4;
-  const myFirst = Math.min(order.indexOf(rootPos), order.indexOf(partner));
-  const mySecond = Math.max(order.indexOf(rootPos), order.indexOf(partner));
+  // 推算在 3 家出完时停止，剩余一家不在 order 中：他就是末游（第 4 名）
+  const rank = (p: number) => {
+    const i = order.indexOf(p);
+    return i === -1 ? 3 : i;
+  };
+  const myFirst = Math.min(rank(rootPos), rank(partner));
+  const mySecond = Math.max(rank(rootPos), rank(partner));
   if (myFirst === 0 && mySecond === 1) return 3;
   if (myFirst === 0 && mySecond === 2) return 2;
-  if (myFirst === 0) return 1;
+  if (myFirst === 0) return 1; // 含 头游+末游
   return 0;
 }
 
@@ -134,58 +159,83 @@ function nextActive(s: SimState, from: number): number {
   return from;
 }
 
-export function search(
+/**
+ * me 行动后的状态推进：登记出完 → 若其余活跃玩家全 PASS 则一轮结束，
+ * 由领先者领出；领先者已出完则对家接风（对家也出完则顺时针顺延）。
+ */
+function afterPlay(ns: SimState, me: number): void {
+  if (ns.hands[me].length === 0 && !ns.order.includes(me)) ns.order.push(me);
+  if (ns.passCount >= 3 - ns.order.length) {
+    ns.greater = null;
+    ns.passCount = 0;
+    if (!ns.order.includes(ns.greaterPos)) {
+      ns.turn = ns.greaterPos;
+    } else {
+      const partner = (ns.greaterPos + 2) % 4;
+      ns.turn = ns.order.includes(partner) ? nextActive(ns, ns.greaterPos) : partner;
+    }
+  } else {
+    ns.turn = nextActive(ns, me);
+  }
+}
+
+/** 应用一个动作并推进状态（出完登记 / 轮次结束 / 接风） */
+function applyMove(s: SimState, me: number, m: Action): SimState {
+  const ns: SimState = {
+    hands: s.hands.map((h, i) => (i === me ? removeCards(h, m[2]) : h)),
+    turn: me, greater: s.greater, greaterPos: s.greaterPos,
+    passCount: s.passCount, order: [...s.order],
+  };
+  if (isPass(m)) {
+    ns.passCount++;
+  } else {
+    ns.passCount = 0;
+    ns.greater = m;
+    ns.greaterPos = me;
+  }
+  afterPlay(ns, me);
+  return ns;
+}
+
+/**
+ * 拟人 rollout：从当前局面推演到底，每个座位都用牌理同款评分器
+ * （scorePlayAction，含让队友/拦截/救炸等局面修正）从自己的视角选招。
+ * 与 paranoid 搜索的本质区别：对手不再"透视"我的手牌打最坏情况——
+ * 那是系统性悲观偏差；拟人推演消的是偏差而非噪声，且单次成本 O(步数)，
+ * 同样的时间预算能跑多一个数量级的样本数，让均值收敛。
+ */
+export function rollout(
   s: SimState, level: string, rootPos: number,
-  alpha: number, beta: number, depth: number, budget: { nodes: number },
+  ev: HandEvaluator, aw: ActionWeights, maxPlies: number,
 ): number {
-  if (--budget.nodes <= 0) return 0;
-  if (s.order.length >= 3) return payoff(s.order, rootPos) * 100;
-  if (depth <= 0) {
-    // 深度截断启发：我方两队剩余牌差
-    const partner = (rootPos + 2) % 4;
-    const mine = s.hands[rootPos].length + s.hands[partner].length;
-    const opp = s.hands[(rootPos + 1) % 4].length + s.hands[(rootPos + 3) % 4].length;
-    return (opp - mine) * 2;
-  }
-  const me = s.turn;
-  const isMine = me === rootPos || me === (rootPos + 2) % 4;
-  const moves = genMoves(s.hands[me], level, s.greater)
-    .sort((a, b) => (isBombLike(a) ? 1 : 0) - (isBombLike(b) ? 1 : 0)); // 炸弹后置
-  let best = isMine ? -Infinity : Infinity;
-  for (const m of moves) {
-    const ns: SimState = {
-      hands: s.hands.map((h, i) => (i === me ? removeCards(h, m[2]) : h)),
-      turn: me, greater: s.greater, greaterPos: s.greaterPos,
-      passCount: s.passCount, order: [...s.order],
+  for (let ply = 0; ply < maxPlies; ply++) {
+    if (s.order.length >= 3) return payoff(s.order, rootPos) * 100;
+    const me = s.turn;
+    const moves = genMoves(s.hands[me], level, s.greater);
+    if (moves.length === 0) return 0; // 不应发生：活跃玩家恒有 PASS 或可出的牌
+    // 从 me 的视角构造评分状态（模拟中各家剩余张数已知）
+    const view: GameState = {
+      myPos: me, handCards: s.hands[me],
+      publicInfo: s.hands.map((h) => ({ rest: h.length })),
+      selfRank: level, oppoRank: level, curRank: level,
+      curPos: me,
+      greaterPos: s.greater === null ? -1 : s.greaterPos,
+      curAction: s.greater, greaterAction: s.greater,
+      history: [], finished: s.order, stage: "play",
     };
-    if (isPass(m)) {
-      ns.passCount++;
-    } else {
-      ns.passCount = 0;
-      ns.greater = m;
-      ns.greaterPos = me;
+    let bestMove = moves[0];
+    let bestScore = -Infinity;
+    for (const m of moves) {
+      const sc = scorePlayAction(view, m, ev, aw);
+      if (sc > bestScore) { bestScore = sc; bestMove = m; }
     }
-    if (ns.hands[me].length === 0 && !ns.order.includes(me)) ns.order.push(me);
-    // 三家 PASS → 新的一轮，由领先者（或其下家）领出
-    if (ns.passCount >= 3 - ns.order.length) {
-      ns.greater = null;
-      ns.passCount = 0;
-      ns.turn = ns.order.includes(ns.greaterPos) ? nextActive(ns, ns.greaterPos) : ns.greaterPos;
-    } else {
-      ns.turn = nextActive(ns, me);
-    }
-    if (ns.order.length >= 4) break;
-    const v = search(ns, level, rootPos, alpha, beta, depth - 1, budget);
-    if (isMine) {
-      best = Math.max(best, v);
-      alpha = Math.max(alpha, v);
-    } else {
-      best = Math.min(best, v);
-      beta = Math.min(beta, v);
-    }
-    if (beta <= alpha) break; // 剪枝：这条线没必要再算
+    s = applyMove(s, me, bestMove);
   }
-  return best === Infinity || best === -Infinity ? 0 : best;
+  // 步数兜底（正常不会到这）：按双方剩余牌差估值
+  const partner = (rootPos + 2) % 4;
+  const mine = s.hands[rootPos].length + s.hands[partner].length;
+  const opp = s.hands[(rootPos + 1) % 4].length + s.hands[(rootPos + 3) % 4].length;
+  return (opp - mine) * 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,51 +243,69 @@ export function search(
 // ---------------------------------------------------------------------------
 
 export interface EndgameOptions {
-  samples?: number;      // 猜牌次数，默认 24
+  samples?: number;      // 猜牌次数基数，默认 24（未见牌越少实际采样越多）
   maxCandidates?: number;// 每次最多评估几个候选动作，默认 6
-  depth?: number;        // 推算深度，默认 16
-  nodeBudget?: number;   // 单动作单样本节点上限，默认 4000
+  maxPlies?: number;     // 单次 rollout 的最大步数兜底，默认 100
   timeMs?: number;       // 总时间上限，默认 1500ms
+  overrideMargin?: number; // 搜索覆盖牌理首选所需的最小均值差，默认 25
 }
 
 export class EndgameSearch implements Policy {
   readonly name = "endgame";
   private tracker: TrackerView;
   private opts: Required<EndgameOptions>;
+  private preEv = new HandEvaluator();      // 候选预筛与 rollout 选招共用（与牌理同套评估器）
+  private preAw = DEFAULT_ACTION_WEIGHTS;
 
   constructor(tracker: TrackerView, opts: EndgameOptions = {}) {
     this.tracker = tracker;
     this.opts = {
       samples: opts.samples ?? 24,
       maxCandidates: opts.maxCandidates ?? 6,
-      depth: opts.depth ?? 16,
-      nodeBudget: opts.nodeBudget ?? 4000,
+      maxPlies: opts.maxPlies ?? 100,
       timeMs: opts.timeMs ?? 1500,
+      overrideMargin: opts.overrideMargin ?? 25,
     };
   }
 
   chooseAction(state: GameState, actions: Action[]): number {
     if (actions.length === 1) return 0;
-    // 候选：非 PASS 动作按"多牌优先、炸弹靠后"预排序取前 K，另保留 PASS
+    // 候选预筛：全部动作用牌理评分器打分取前 K（不再按牌数粗排，
+    // 避免残局正确的小牌控场打法被挤出候选集）；跟牌时 PASS 必留。
     const passIdx = actions.findIndex(isPass);
-    const candIdx = actions
-      .map((a, i) => ({ a, i }))
-      .filter((x) => !isPass(x.a))
-      .sort((x, y) =>
-        (isBombLike(x.a) ? 1 : 0) - (isBombLike(y.a) ? 1 : 0) ||
-        y.a[2].length - x.a[2].length)
-      .slice(0, this.opts.maxCandidates)
-      .map((x) => x.i);
-    if (passIdx >= 0 && state.greaterPos !== -1 && state.greaterPos !== state.myPos) {
+    const pre = new Map<number, number>(
+      actions.map((a, i) => [i, scorePlayAction(state, a, this.preEv, this.preAw)]),
+    );
+    const candIdx = [...pre.keys()].sort((x, y) => pre.get(y)! - pre.get(x)!)
+      .slice(0, this.opts.maxCandidates);
+    if (passIdx >= 0 && !candIdx.includes(passIdx)
+        && state.greaterPos !== -1 && state.greaterPos !== state.myPos) {
       candIdx.push(passIdx);
     }
     if (candIdx.length === 0) return 0;
+    // 预评分最高者：搜索样本不足时的安全回退
+    let preBest = candIdx[0];
+    for (const i of candIdx) if (pre.get(i)! > pre.get(preBest)!) preBest = i;
+
+    // 本轮已有的连续 PASS 数（历史尾部），用于正确模拟"我 PASS 后是否一轮结束"
+    let trailingPasses = 0;
+    for (let i = state.history.length - 1; i >= 0; i--) {
+      if (isPass(state.history[i].action)) trailingPasses++;
+      else break;
+    }
+
+    // 自适应采样：其他家未见牌越少，采样空间越小，加采样让均值收敛
+    const unseen = state.publicInfo.reduce((s, pi, p) =>
+      p === state.myPos || state.finished.includes(p) ? s : s + pi.rest, 0);
+    const targetSamples = unseen <= 12 ? this.opts.samples * 2
+      : unseen <= 20 ? Math.ceil(this.opts.samples * 1.5)
+      : this.opts.samples;
 
     const deadline = Date.now() + this.opts.timeMs;
     const total = new Map<number, number>(candIdx.map((i) => [i, 0]));
     let doneSamples = 0;
 
-    for (let s = 0; s < this.opts.samples && Date.now() < deadline; s++) {
+    for (let s = 0; s < targetSamples && Date.now() < deadline; s++) {
       const hands = sampleHands(state, this.tracker);
       for (const i of candIdx) {
         if (Date.now() >= deadline) break;
@@ -249,27 +317,29 @@ export class EndgameSearch implements Policy {
           passCount: 0, order: [...state.finished],
         };
         if (isPass(a)) {
-          sim.passCount = 1;
+          sim.passCount = trailingPasses + 1;
         } else {
           sim.greater = a;
           sim.greaterPos = state.myPos;
         }
-        if (sim.hands[state.myPos].length === 0 && !sim.order.includes(state.myPos)) {
-          sim.order.push(state.myPos);
-        }
-        sim.turn = nextActive(sim, state.myPos);
-        const budget = { nodes: this.opts.nodeBudget };
+        afterPlay(sim, state.myPos);
         const v = sim.order.length >= 3
           ? payoff(sim.order, state.myPos) * 100
-          : search(sim, state.curRank, state.myPos, -Infinity, Infinity, this.opts.depth, budget);
+          : rollout(sim, state.curRank, state.myPos, this.preEv, this.preAw, this.opts.maxPlies);
         total.set(i, total.get(i)! + v);
       }
       doneSamples++;
     }
+    if (doneSamples < 4) return preBest; // 时间耗尽/样本太少：搜索结果是噪声，回退牌理
     let best = candIdx[0], bestAvg = -Infinity;
     for (const i of candIdx) {
-      const avg = total.get(i)! / Math.max(1, doneSamples);
+      const avg = total.get(i)! / doneSamples;
       if (avg > bestAvg) { bestAvg = avg; best = i; }
+    }
+    // 覆盖裕度：只有搜索均值显著更好才推翻牌理首选，避免噪声覆盖
+    if (best !== preBest) {
+      const preAvg = total.get(preBest)! / doneSamples;
+      if (bestAvg - preAvg < this.opts.overrideMargin) return preBest;
     }
     return best;
   }

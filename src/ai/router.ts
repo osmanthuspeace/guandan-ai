@@ -1,6 +1,7 @@
 /**
  * 顶层路由：按阶段分发到 贡还牌 / 末局搜索 / 出牌牌理。
- * 残局触发：任一未出完玩家（含自己）剩余牌数 ≤ threshold。
+ * 残局触发（搜索只在采样方差可控时才有正收益）：
+ * 所有未出完玩家剩余牌数 ≤ threshold，或其他玩家未见牌总数 ≤ 2×threshold。
  */
 import { Action, GameState, Policy } from "../types.js";
 import { CardTracker } from "../search/tracker.js";
@@ -29,14 +30,13 @@ export class RouterPolicy implements Policy {
   chooseAction(state: GameState, actions: Action[]): number {
     this.tracker.update(state);
     if (state.stage !== "play") return this.tribute.chooseAction(state, actions);
-    const minRest = Math.min(
-      state.handCards.length,
-      ...state.publicInfo
-        .filter((_, p) => p !== state.myPos && !state.finished.includes(p))
-        .map((pi) => pi.rest),
-    );
-    if (this.useEndgame && minRest <= this.threshold
-        && state.publicInfo.some((pi) => pi.rest <= this.threshold)) {
+    const rests = state.publicInfo.map((pi, p) =>
+      p === state.myPos ? state.handCards.length : pi.rest);
+    const active = rests.filter((_, p) => !state.finished.includes(p));
+    const maxRest = Math.max(...active);
+    const unseenOthers = active.reduce((s, r) => s + r, 0) - state.handCards.length;
+    if (this.useEndgame
+        && (maxRest <= this.threshold || unseenOthers <= this.threshold * 2)) {
       return this.endgame.chooseAction(state, actions);
     }
     return this.rule.chooseAction(state, actions);

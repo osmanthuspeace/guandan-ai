@@ -20,7 +20,10 @@ export const POLICIES: Record<string, PolicyDef> = {
     label: "规则AI(无搜索)",
     create: () => new RouterPolicy({ useEndgame: false }),
   },
-
+  "rule-se": { // 兼容旧命令/日志的别名，等同 rule
+    label: "规则AI(含末局搜索)",
+    create: () => new RouterPolicy({ samples: 16, timeMs: 800 }),
+  },
   random: {
     label: "随机",
     create: () => new RandomPolicy(),

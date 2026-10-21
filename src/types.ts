@@ -203,7 +203,7 @@ export interface ActionWeights {
 // 可用 bench/tuneEval.ts（DIMS 已含 aw.*）以胜率实测继续微调。
 export const DEFAULT_ACTION_WEIGHTS: ActionWeights = {
   // 出完=终局事件，须严格大于一切非终局得分：组法分上界140 + 拦截满分150 ≈ 290，
-  // 取 500 留 1.7 倍余量（旧值 150 理论上会被"高分手牌+拦截"反超）。
+  // 取 500 留 1.7 倍余量
   finish: 500,
   // 非出完不压队友 ⟺ Δ < |beatPartner| − passPartner；Δ≤50 故阈值 110 即够，
   // 取 -240 留 2 倍余量（再大行为不变）。

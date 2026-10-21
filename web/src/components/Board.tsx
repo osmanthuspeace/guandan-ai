@@ -17,11 +17,31 @@ export function Board({ state }: { state: UiState }) {
             ? <>座{state.trick.pos}　{state.trick.cards.map((c, i) => <CardView key={`${c}-${i}`} c={c} />)}</>
             : <span className="felt-label">—</span>}
         </div>
-        {state.episode > 0 && (
-          <div className="meta">
-            第 {state.episode} 局 · A队打 {state.selfRank} · B队打 {state.oppoRank}
+        {state.episode > 0 ? (
+          <div className="scoreboard">
+            <div className="sb-row">
+              <span className="sb-tag">大局</span>
+              <span className="sb-team sb-a">A</span>
+              <span className="sb-num">{state.games[0]}</span>
+              <span className="sb-colon">:</span>
+              <span className="sb-num">{state.games[1]}</span>
+              <span className="sb-team sb-b">B</span>
+            </div>
+            <div className="sb-row sb-sub">
+              <span className="sb-tag">本场</span>
+              <span className="sb-team sb-a">A</span>
+              <span className="sb-num2">{state.score[0]}</span>
+              <span className="sb-colon">:</span>
+              <span className="sb-num2">{state.score[1]}</span>
+              <span className="sb-team sb-b">B</span>
+            </div>
+            <div className="sb-meta">
+              第 {state.episode} 局 · A队打 {state.selfRank} · B队打 {state.oppoRank}
+            </div>
           </div>
-        )}
+        ) : state.mode === "match" ? (
+          <div className="sb-meta">等待外部玩家加入，满员自动开局</div>
+        ) : null}
       </div>
 
       <div className="hand">

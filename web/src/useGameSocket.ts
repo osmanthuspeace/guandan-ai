@@ -10,6 +10,7 @@ const MAX_LOGS = 2000;
 const initialState: UiState = {
   connected: false,
   status: "idle",
+  mode: "local",
   episode: 0,
   selfRank: "2",
   oppoRank: "2",
@@ -18,12 +19,15 @@ const initialState: UiState = {
   last: [null, null, null, null],
   trick: null,
   logs: [],
+  score: [0, 0],
+  games: [0, 0],
   result: null,
+  matchInfo: null,
 };
 
 type ReducerAction =
   | { type: "conn"; ok: boolean }
-  | { type: "startRun" }
+  | { type: "startRun"; mode: "local" | "match" }
   | { type: "msg"; msg: ServerMsg };
 
 let logSeq = 0;
@@ -81,9 +85,20 @@ function reduceMsg(s: UiState, msg: ServerMsg): UiState {
       return { ...s, rests, hand };
     }
     case "episodeOver":
-      return { ...s, rests: [27, 27, 27, 27] };
+      return { ...s, rests: [27, 27, 27, 27], score: msg.score ?? s.score };
+    case "gameOver":
+      // 一场结束：大局取 worker 入账值；本场比分/局数清零，待下一场从 2 重打
+      return { ...s, games: msg.games, score: [0, 0], episode: 0, trick: null };
     case "result":
-      return { ...s, status: "finished", result: { victory: msg.victory, episodes: msg.episodes } };
+      return {
+        ...s,
+        status: "finished",
+        games: msg.games,
+        score: msg.score ?? s.score,
+        result: { victory: msg.victory, episodes: msg.episodes, score: msg.score ?? [0, 0] },
+      };
+    case "match":
+      return { ...s, matchInfo: { roomId: msg.roomId, urls: msg.urls } };
     case "log": {
       const logs = [...s.logs, { id: ++logSeq, text: msg.text }];
       if (logs.length > MAX_LOGS) logs.splice(0, logs.length - MAX_LOGS);
@@ -103,13 +118,19 @@ function reducer(s: UiState, a: ReducerAction): UiState {
     case "conn":
       return { ...s, connected: a.ok };
     case "startRun":
-      return { ...initialState, connected: s.connected, status: "running" };
+      // 重新开始即全新对决：大局比分一并清零
+      return { ...initialState, connected: s.connected, status: "running", mode: a.mode };
     case "msg":
       return reduceMsg(s, a.msg);
   }
 }
 
-export interface StartParams { p02: string; p13: string; rounds: number; }
+export interface StartParams {
+  mode: "local" | "match";
+  p02: string;
+  p13: string;
+  rounds: number;
+}
 
 export function useGameSocket() {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -135,7 +156,7 @@ export function useGameSocket() {
   };
 
   const startRun = (p: StartParams) => {
-    dispatch({ type: "startRun" });
+    dispatch({ type: "startRun", mode: p.mode });
     send({ type: "start", ...p });
   };
   const stopRun = () => send({ type: "stop" });

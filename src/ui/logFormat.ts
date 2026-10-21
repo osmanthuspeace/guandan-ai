@@ -54,12 +54,23 @@ export function fmtAntiTribute(antiPos: unknown): string {
   return `${who} 抗贡，本轮免除进贡`;
 }
 
-export function fmtEpisodeOver(order: number[], curRank: string): string {
+export function fmtEpisodeOver(order: number[], score?: [number, number]): string {
   const ord = (order ?? []).map(seatTag).join(" › ");
-  return `─ 局终 · 名次 ${ord}${curRank ? ` · 下局打 ${curRank}` : ""} ─`;
+  const s = score ? ` · 胜局 A ${score[0]}:${score[1]} B` : "";
+  // 双方下局打几看下一局开头的"A队打X B队打Y"（episodeOver 不带双方新等级）
+  return `─ 局终 · 名次 ${ord}${s} ─`;
 }
 
-export function fmtResult(victory: unknown, episodes: number): string {
+export function fmtGameOver(game: number, victory: number | null, games: [number, number]): string {
+  const winner = victory === 0 ? "A队" : victory === 1 ? "B队" : "未知队伍";
+  return `━━ 第 ${game} 场结束 · ${winner}过A胜 · 大局 A ${games[0]}:${games[1]} B ━━`;
+}
+
+export function fmtResult(
+  victory: unknown, episodes: number, score?: [number, number], games?: [number, number],
+): string {
   const winner = victory === 0 ? "A队" : victory === 1 ? "B队" : `Team${victory}`;
-  return `★ 比赛结束 · ${winner}胜 · 共 ${episodes} 局`;
+  const g = games ? ` · 大局 A ${games[0]}:${games[1]} B` : "";
+  const s = score ? ` · 末场胜局 A ${score[0]}:${score[1]} B` : "";
+  return `★ 比赛结束 · 末场${winner}胜（先过A）${g}${s} · 共 ${episodes} 局`;
 }

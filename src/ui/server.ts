@@ -5,7 +5,7 @@
  * 用法：npm run server（本服务）+ npm run dev:web（前端）
  */
 import { createServer } from "node:http";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Worker } from "node:worker_threads";
@@ -14,6 +14,16 @@ import { WebSocketServer, WebSocket } from "ws";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8080);
 const WEB_DEV_URL = process.env.WEB_DEV_URL ?? "http://127.0.0.1:5173";
+
+/** 对局记录落盘：logs/games.log（追加写，含每场完整日志与结果） */
+const LOG_DIR = join(__dirname, "../../logs");
+mkdirSync(LOG_DIR, { recursive: true });
+const LOG_FILE = join(LOG_DIR, "games.log");
+function persist(line: string) {
+  try {
+    appendFileSync(LOG_FILE, `[${new Date().toLocaleString("zh-CN", { hour12: false })}] ${line}\n`);
+  } catch { /* 写盘失败不影响对战 */ }
+}
 
 const server = createServer((req, res) => {
   // 非 WS 的 HTTP 请求一律转到前端 dev server
@@ -53,16 +63,26 @@ wss.on("connection", (ws) => {
         workerData: {
           url: msg.gameUrl ?? "ws://127.0.0.1:8181",
           rounds: Number(msg.rounds ?? 1),
+          mode: msg.mode === "match" ? "match" : "local",
           p02: msg.p02 ?? "rule",
           p13: msg.p13 ?? "random",
         },
       });
-      worker.on("message", broadcast);
+      worker.on("message", (m) => {
+        broadcast(m);
+        if (m.kind === "log") persist(String(m.text));
+        else if (m.kind === "result") persist(`RESULT ${JSON.stringify(m)}`);
+      });
       worker.on("error", (e) => broadcast({ kind: "error", text: String(e) }));
-      broadcast({ kind: "log", text: "对战已启动（worker 线程）" });
+      persist(`===== 新对战 mode=${msg.mode === "match" ? "match" : "local"} A队=${msg.p02 ?? "rule"} B队=${msg.p13 ?? "random"} 场数=${Number(msg.rounds ?? 1)} =====`);
+      broadcast({
+        kind: "log",
+        text: msg.mode === "match" ? "联机约战已启动（worker 线程）" : "对战已启动（worker 线程）",
+      });
     } else if (msg.type === "stop") {
       worker?.terminate();
       worker = null;
+      persist("对战已停止（手动）");
       broadcast({ kind: "log", text: "对战已停止" });
     }
   });

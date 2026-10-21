@@ -21,6 +21,7 @@ export interface BotResult {
   myPos: number;
   victory?: number;
   episodes: number;
+  epWins?: number; // 本队拿头游的局数（episodeOver.order[0] 所在队）
 }
 
 export function runBot(opts: BotOptions): Promise<BotResult> {
@@ -62,11 +63,15 @@ export function runBot(opts: BotOptions): Promise<BotResult> {
       if (msg.type === "notify") {
         state.handleNotify(msg);
         if (msg.stage === "beginning") result.myPos = state.myPos;
-        if (msg.stage === "episodeOver") episodes++;
+        if (msg.stage === "episodeOver") {
+          episodes++;
+          const order = msg.order as number[] | undefined;
+          if (order?.length && result.myPos >= 0 && order[0] % 2 === result.myPos % 2) {
+            result.epWins = (result.epWins ?? 0) + 1;
+          }
+        }
         if (msg.stage === "gameResult") {
           result.victory = msg.victory as number;
-        }
-        if (msg.stage === "gameOver" || msg.stage === "gameResult") {
           result.episodes = episodes;
           ws.close();
           resolve(result);

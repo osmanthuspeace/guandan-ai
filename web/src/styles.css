@@ -20,6 +20,18 @@ body {
 .topbar .field-label { font-size: 13px; color: #6b7280; }
 .topbar .status { margin-left: auto; font-size: 13px; }
 
+/* 联机约战横幅 */
+.match-banner {
+  flex: none; display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 8px 16px; font-size: 13px;
+  background: #fffbeb; border-bottom: 1px solid #fde68a; color: #92400e;
+}
+.match-banner b { font-size: 15px; }
+.match-banner code {
+  background: #fff; border: 1px solid #fde68a; border-radius: 5px;
+  padding: 2px 8px; font-size: 12px; color: #374151;
+}
+
 /* 牌桌 */
 .board {
   flex: 1; min-width: 0; padding: 12px;
@@ -29,8 +41,9 @@ body {
   grid-template-areas: ". top ." "left felt right" "hand hand hand";
 }
 .area-top { grid-area: top; }
-.area-left { grid-area: left; align-self: center; }
-.area-right { grid-area: right; align-self: center; }
+/* 左右两家（座1/座3）撑满中间行，与中央展示区等高，高度固定不随出牌变化 */
+.area-left { grid-area: left; align-self: stretch; }
+.area-right { grid-area: right; align-self: stretch; }
 
 .seat {
   background: #fff; border: 1px solid #e5e7eb; border-radius: 10px;
@@ -41,6 +54,11 @@ body {
 .seat-name .team-b { color: #ea580c; }
 .seat-rest { font-size: 12px; color: #6b7280; margin-top: 2px; }
 .seat-last { margin-top: 6px; min-height: 26px; font-size: 12px; color: #9ca3af; }
+/* 左右两家（座1/座3）的出牌竖排：侧栏窄而纵向空间充足 */
+.area-left .seat-last, .area-right .seat-last {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 3px;
+}
+.area-left .seat-last .card, .area-right .seat-last .card { margin: 0; }
 
 .felt {
   grid-area: felt;
@@ -52,15 +70,32 @@ body {
 .trick { min-height: 30px; }
 .meta { font-size: 12px; color: #4b5563; }
 
+/* 牌桌中央记分板（联机约战模式） */
+.scoreboard { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.sb-row { display: flex; align-items: baseline; gap: 10px; }
+.sb-tag { font-size: 11px; color: #9ca3af; width: 24px; text-align: right; }
+.sb-sub { opacity: 0.92; }
+.sb-team { font-size: 14px; font-weight: 700; }
+.sb-team.sb-a { color: #2563eb; }
+.sb-team.sb-b { color: #ea580c; }
+.sb-num { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.sb-sub .sb-team { font-size: 12px; }
+.sb-num2 { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.sb-sub .sb-colon { font-size: 14px; }
+.sb-colon { font-size: 20px; color: #9ca3af; }
+.sb-meta { font-size: 12px; color: #6b7280; margin-top: 5px; }
+
 .hand {
   grid-area: hand; background: #fff; border: 1px solid #e5e7eb;
   border-radius: 10px; padding: 8px 12px;
+  /* 固定最小高度：约两行牌的高度，没牌时不再凹陷 */
+  min-height: 100px;
 }
 .hand-name { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-.hand-cards { line-height: 30px; }
+.hand-cards { line-height: 30px; min-height: 58px; }
 
 .card {
-  display: inline-block; background: #fff; border: 1px solid #d1d5db;
+  background: #fff; border: 1px solid #d1d5db;
   border-radius: 5px; padding: 2px 7px; margin: 2px;
   font-size: 13px; font-weight: 600; color: #111827; white-space: nowrap;
 }

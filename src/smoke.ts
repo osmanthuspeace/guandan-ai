@@ -10,6 +10,7 @@ import { predict } from "./search/predict.js";
 import { EndgameSearch, sampleHands, genMoves, canBeat } from "./search/endgame.js";
 import { RouterPolicy } from "./ai/router.js";
 import { Action, GameState } from "./types.js";
+import { countViolations, extractCaps } from "./search/constraints.js";
 
 let failed = 0;
 function check(name: string, cond: boolean) {
@@ -68,9 +69,58 @@ tracker.update(st);
 check("未见牌数 = 108-10", tracker.unseenCards([]).length === 98);
 const pred = predict(st, tracker);
 check("预测输出四座位嫌疑", pred.bombRisk.length === 4);
+// 记牌器跨局重置：本局已打的牌，下一局（history 变短）应回到未见池
+const t2 = new CardTracker();
+const histState = makeState(myHand, acts);
+histState.history = [{ pos: 1, action: ["Single", "Q", ["SQ"]] }];
+t2.update(histState);
+check("记牌器本局扣除已打", t2.unseenCards([]).filter((c) => c === "SQ").length === 1);
+t2.update(makeState(myHand, acts)); // history 为空 = 新的一局
+check("记牌器跨局重置", t2.unseenCards([]).filter((c) => c === "SQ").length === 2);
+
+// --- 约束采样 ---
+const PASS_A: Action = ["PASS", "PASS", ["PASS"]];
+const capState: GameState = {
+  ...makeState(myHand, acts),
+  history: [
+    { pos: 0, action: ["Single", "9", ["S9"]] }, // 我(座0)出单9
+    { pos: 3, action: PASS_A },                  // 对手(座3)PASS → 推断无单>9
+    { pos: 2, action: PASS_A },                  // 队友(座2)PASS → 让牌，不产生约束
+    { pos: 2, action: ["Bomb", "8", ["S8", "H8", "C8", "D8"]] }, // 队友出4炸
+    { pos: 3, action: PASS_A },                  // 座3 PASS → 推断无炸>40
+  ],
+};
+const caps = extractCaps(capState);
+check("PASS推断单张上限", caps[3]?.single === 9);
+check("PASS推断炸弹上限", caps[3]?.bomb === 40);
+check("队友让牌不产生约束", caps[2] === null);
+// 自洽过滤：之后打出更大的单牌 → 推断作废
+const contraState: GameState = {
+  ...capState,
+  history: [...capState.history, { pos: 3, action: ["Single", "K", ["SK"]] }],
+};
+check("憋牌自洽过滤", extractCaps(contraState)[3]?.single === undefined);
+// 拒绝采样：座3有约束（无单>9）时，多次采样都应不违约。
+// 座3拿2张：随机分配约 65% 概率违约，若拒绝采样失效 20 连测必挂
+const csState: GameState = {
+  ...makeState(["S5", "D3"], acts),
+  publicInfo: [2, 12, 2, 2].map((rest) => ({ rest })),
+  history: [
+    { pos: 0, action: ["Single", "9", ["S9"]] }, // 我出单9，座3 PASS → 约束座3
+    { pos: 3, action: PASS_A },
+  ],
+};
+const csTracker = new CardTracker();
+csTracker.update(csState);
+let allOk = true;
+for (let i = 0; i < 20; i++) {
+  const h = sampleHands(csState, csTracker);
+  if (countViolations(h, extractCaps(csState), "2", 0) !== 0) { allOk = false; break; }
+}
+check("约束采样20次零违约", allOk);
 
 // --- 末局搜索（小规模） ---
-const eg = new EndgameSearch(tracker, { samples: 4, maxCandidates: 3, depth: 10, nodeBudget: 2000, timeMs: 500 });
+const eg = new EndgameSearch(tracker, { samples: 4, maxCandidates: 3, maxPlies: 60, timeMs: 500 });
 const smallState: GameState = {
   myPos: 0, handCards: ["S5", "H5", "D9"],
   publicInfo: [3, 4, 5, 4].map((rest) => ({ rest })),

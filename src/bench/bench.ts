@@ -20,7 +20,7 @@ async function main() {
   const p13 = arg("p13", "random");
   const seats = [p02, p13, p02, p13];
 
-  let win0 = 0, win1 = 0, draws = 0, totalEpisodes = 0;
+  let win0 = 0, win1 = 0, draws = 0, totalEpisodes = 0, epWin0 = 0, epWin1 = 0;
 
   for (let m = 0; m < matches; m++) {
     // 先建房的拿 roomId，其余三人加入
@@ -42,12 +42,15 @@ async function main() {
     const v = results[0].victory;
     if (v === 0) win0++; else if (v === 1) win1++; else draws++;
     totalEpisodes += results[0].episodes || rounds;
+    epWin0 += results[0].epWins ?? 0;
+    epWin1 += results[1].epWins ?? 0;
     console.log(`[match ${m + 1}/${matches}] victory=${v} episodes=${results[0].episodes}`);
   }
 
   console.log("\n===== 统计 =====");
   console.log(`Team0(${p02}) 胜 ${win0} 场，Team1(${p13}) 胜 ${win1} 场，平 ${draws}`);
-  console.log(`总对局 ${totalEpisodes}，Team0 胜率 ${(win0 / Math.max(1, matches) * 100).toFixed(1)}%`);
+  console.log(`总对局 ${totalEpisodes}，Team0 局胜率 ${(epWin0 / Math.max(1, totalEpisodes) * 100).toFixed(1)}%`
+    + `（场胜率 ${(win0 / Math.max(1, matches) * 100).toFixed(1)}%，局胜 ${epWin0}:${epWin1}）`);
 }
 
 main().catch((e) => {
