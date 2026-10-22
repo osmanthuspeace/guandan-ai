@@ -14,6 +14,8 @@ export interface BotOptions {
   seatNum?: number;
   onEvent?: (ev: Record<string, unknown>) => void; // UI 推送钩子
   onRoomCreated?: (roomId: number) => void;        // 建房/入房成功回调
+  /** 行动前钩子（可异步）：策略已选好 chosen，resolve 后才上报，UI 手动步进用 */
+  beforeAct?: (act: ActMessage, chosen: Action) => void | Promise<void>;
 }
 
 export interface BotResult {
@@ -53,7 +55,6 @@ export function runBot(opts: BotOptions): Promise<BotResult> {
         return;
       }
       opts.onEvent?.(msg);
-
       if (msg.type === "CREATE_ROOM" || msg.type === "JOIN_ROOM") {
         const data = msg.data as { roomId: number };
         roomId = data.roomId;
@@ -80,20 +81,30 @@ export function runBot(opts: BotOptions): Promise<BotResult> {
       }
       if (msg.type === "act") {
         const act = msg as unknown as ActMessage;
-        const gs = state.buildGameState(act);
-        const actions = act.actionList ?? [];
-        const idx = actions.length > 0 ? opts.policy.chooseAction(gs, actions) : 0;
-        const chosen: Action = actions[idx] ?? actions[0];
-        if (act.stage === "play") {
-          send("PLAY", { roomId, player: state.myPos, act: chosen });
-        } else if (act.stage === "tribute") {
-          send("TRIBUTE", { roomId, player: state.myPos, act: chosen });
-        } else if (act.stage === "back") {
-          send("PAYTRIBUTE", {
-            roomId, player: state.myPos,
-            tributePos: act.tributePos, tribute: act.tribute, act: chosen,
-          });
-        }
+        // beforeAct 可能是异步闸门（手动步进），不阻塞 ws 消息循环
+        void (async () => {
+          const gs = state.buildGameState(act);
+          const actions = act.actionList ?? [];
+          const idx = actions.length > 0 ? opts.policy.chooseAction(gs, actions) : 0;
+          const chosen: Action = actions[idx] ?? actions[0];
+          // 先选好再进闸门：钩子可展示"准备打的牌"
+          try {
+            await opts.beforeAct?.(act, chosen);
+          } catch (e) {
+            reject(e);
+            return;
+          }
+          if (act.stage === "play") {
+            send("PLAY", { roomId, player: state.myPos, act: chosen });
+          } else if (act.stage === "tribute") {
+            send("TRIBUTE", { roomId, player: state.myPos, act: chosen });
+          } else if (act.stage === "back") {
+            send("PAYTRIBUTE", {
+              roomId, player: state.myPos,
+              tributePos: act.tributePos, tribute: act.tribute, act: chosen,
+            });
+          }
+        })();
         return;
       }
     });

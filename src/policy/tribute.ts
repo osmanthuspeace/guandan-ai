@@ -20,7 +20,7 @@ export class TributePolicy implements Policy {
     let best = 0, bestScore = -Infinity;
     for (let i = 0; i < actions.length; i++) {
       const card = actions[i][2][0];
-      // 非红桃花色优先（保留逢人配的可能性——虽然规则上逢人配不必进贡，防御性处理）
+      // 非红桃优先，避开可能的逢人配
       const s = card[0] === "H" ? -1 : 0;
       if (s > bestScore) { bestScore = s; best = i; }
     }
@@ -43,7 +43,6 @@ export class TributePolicy implements Policy {
       // 手中有同点数牌（还掉会破坏对子/三张）重罚
       const dup = (byRank.get(r)?.length ?? 1) - 1;
       s -= dup * 15;
-      // 还给队友方向（下家是我方队友时无所谓，正常小牌即可）——保持简单
       if (s > bestScore) { bestScore = s; best = i; }
     }
     return best;

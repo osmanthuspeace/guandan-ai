@@ -1,6 +1,6 @@
 /**
  * 组牌算法（成员 B）。
- * 思路：先整后零——炸弹/同花顺 > 顺子/三连对/钢板 > 三带二 > 对子/三张 > 单张；
+ * 思路：先整后零，炸弹/同花顺 > 顺子/三连对/钢板 > 三带二 > 对子/三张 > 单张；
  * 逢人配逐个尝试"最赚的位置"（补炸弹 > 补顺子 > 配大单牌）。
  * 生成若干候选组法，调用 A 的 Evaluator 比选。
  */
@@ -163,7 +163,7 @@ function greedyArrange(hand: CardLabel[], level: string, opts: GreedyOptions): A
       groups.push({ pattern: "Bomb", rank: r, cards: takeRank(pool, r, arr.length) });
     }
   }
-  // 2.5 同花顺（含万能补位）：先于万能补炸——同花顺(55) > 5炸(50) > 4炸(40)
+  // 2.5 同花顺（含万能补位）：先于万能补炸，同花顺(55) > 5炸(50) > 4炸(40)
   if (straightFlush) extractStraightFlushes(pool, groups);
   // 3. 万能牌补炸弹：三张 + 1 万能 = 4 炸（最赚的位置）
   if (wildBomb && pool.wilds.length > 0) {

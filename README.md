@@ -60,22 +60,11 @@ npm run bench -- --matches 5 --rounds 1 --p02 rule --p13 random
 
 服务端本身是多人服务器：每个玩家一条 WebSocket 连接占一个座位，满 4 人自动开局。
 
-```bash
-# 主机（你）：建房，队伍 A（座位 0&2）用本方算法，开放座位 1&3
-npm run match -- --policy rule
-# 会打印 roomId 与局域网地址，例如：roomId=392，ws://192.168.3.61:8181
-```
 
 同学（队伍 B，座位 1&3）二选一接入：
 
 ```bash
-# 方式一：用本仓库脚本（可在 src/ai/policies.ts 注册自己的策略后由 --policy 引用）
 npm run bot -- --url ws://192.168.3.61:8181 --user zhangsan --room 392 --seat 1 --policy rule-ns
-
-# 方式二：自写客户端（Python / Java 等任意语言，不依赖本仓库）
-# 按 OpenGuanDan/README.md 第 3~5 节协议：连 ws://<主机IP>:8181 →
-# JOIN_ROOM { userId, roomId, seatNum } → 收到 act 后从 actionList
-# 选动作回 PLAY / TRIBUTE / PAYTRIBUTE
 ```
 
 注意：`userId` 全服唯一；队友坐 0&2 或 1&3；macOS 首次有外部连入时需在弹窗中
@@ -84,8 +73,8 @@ npm run bot -- --url ws://192.168.3.61:8181 --user zhangsan --room 392 --seat 1 
 ### 4. 牌桌 UI（本地观战）
 
 ```bash
-npm run server    # WS 服务 ws://127.0.0.1:8080/ws（会顺带 tsc 构建 worker）
-npm run dev:web   # 前端页面 http://127.0.0.1:5173（/ws 由 Vite 代理到 8080）
+npm run server    # WS 服务 ws://127.0.0.1:8080/ws
+npm run dev:web   # 前端页面 http://127.0.0.1:5173
 ```
 
 页面顶栏有两种模式：
@@ -116,7 +105,6 @@ npm run smoke
 |------|------|
 | `rule` | RouterPolicy 全量：贡还牌 + 牌理 + 末局搜索 |
 | `rule-ns` | 同上但无末局搜索（快，适合大批量 bench 与对照实验） |
-| `rule-se` | `rule` 的兼容别名，供旧命令/旧日志使用 |
 | `random` | 随机合法动作基线 |
 
 - **RouterPolicy**：进贡/还贡 → `TributePolicy`；残局（有人剩牌 ≤ 阈值，默认 10）→ `EndgameSearch`；其余 → `RulePolicy`。

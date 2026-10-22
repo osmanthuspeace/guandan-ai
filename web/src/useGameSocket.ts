@@ -23,11 +23,16 @@ const initialState: UiState = {
   games: [0, 0],
   result: null,
   matchInfo: null,
+  manual: false,
+  awaiting: false,
+  awaitingText: null,
 };
 
 type ReducerAction =
   | { type: "conn"; ok: boolean }
   | { type: "startRun"; mode: "local" | "match" }
+  | { type: "setManual"; on: boolean }
+  | { type: "stepAck" }
   | { type: "msg"; msg: ServerMsg };
 
 let logSeq = 0;
@@ -93,10 +98,14 @@ function reduceMsg(s: UiState, msg: ServerMsg): UiState {
       return {
         ...s,
         status: "finished",
+        awaiting: false,
+        awaitingText: null,
         games: msg.games,
         score: msg.score ?? s.score,
         result: { victory: msg.victory, episodes: msg.episodes, score: msg.score ?? [0, 0] },
       };
+    case "awaiting":
+      return { ...s, awaiting: true, awaitingText: msg.text ?? null };
     case "match":
       return { ...s, matchInfo: { roomId: msg.roomId, urls: msg.urls } };
     case "log": {
@@ -118,8 +127,14 @@ function reducer(s: UiState, a: ReducerAction): UiState {
     case "conn":
       return { ...s, connected: a.ok };
     case "startRun":
-      // 重新开始即全新对决：大局比分一并清零
-      return { ...initialState, connected: s.connected, status: "running", mode: a.mode };
+      // 重新开始即全新对决：大局比分一并清零（manual 选择保留）
+      return { ...initialState, connected: s.connected, status: "running", mode: a.mode, manual: s.manual };
+    case "setManual":
+      return a.on
+        ? { ...s, manual: true }
+        : { ...s, manual: false, awaiting: false, awaitingText: null };
+    case "stepAck":
+      return { ...s, awaiting: false, awaitingText: null };
     case "msg":
       return reduceMsg(s, a.msg);
   }
@@ -157,9 +172,18 @@ export function useGameSocket() {
 
   const startRun = (p: StartParams) => {
     dispatch({ type: "startRun", mode: p.mode });
-    send({ type: "start", ...p });
+    // manual 随 start 下发：worker 是全新进程，开局即手动，避免开局后切换的竞态
+    send({ type: "start", ...p, manual: state.manual });
   };
   const stopRun = () => send({ type: "stop" });
+  const setManual = (on: boolean) => {
+    dispatch({ type: "setManual", on });
+    send({ type: "setManual", on });
+  };
+  const step = () => {
+    dispatch({ type: "stepAck" });
+    send({ type: "step" });
+  };
 
-  return { state, startRun, stopRun };
+  return { state, startRun, stopRun, setManual, step };
 }

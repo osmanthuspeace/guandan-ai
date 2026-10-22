@@ -48,14 +48,9 @@ wss.on("connection", (ws) => {
     try { msg = JSON.parse(raw.toString()); } catch { return; }
     if (msg.type === "start") {
       worker?.terminate();
-      // worker 加载编译后的 JS（tsx 在 worker 线程中无法解析 .ts 入口）：
-      // 兼容从 src/（tsx 开发态）与 dist/（编译产物）两种启动位置
-      const candidates = [
-        join(__dirname, "../../dist/ui/aiWorker.js"),
-        join(__dirname, "./aiWorker.js"),
-      ];
-      const entry = candidates.find((p) => existsSync(p));
-      if (!entry) {
+      // worker 只能加载编译后的 JS（tsx 在 worker 线程里解析不了 .ts 入口）
+      const entry = join(__dirname, "../../dist/ui/aiWorker.js");
+      if (!existsSync(entry)) {
         broadcast({ kind: "error", text: "未找到 dist/ui/aiWorker.js，请先运行 npm run build" });
         return;
       }
@@ -66,6 +61,7 @@ wss.on("connection", (ws) => {
           mode: msg.mode === "match" ? "match" : "local",
           p02: msg.p02 ?? "rule",
           p13: msg.p13 ?? "random",
+          manual: !!msg.manual,
         },
       });
       worker.on("message", (m) => {
@@ -84,6 +80,9 @@ wss.on("connection", (ws) => {
       worker = null;
       persist("对战已停止（手动）");
       broadcast({ kind: "log", text: "对战已停止" });
+    } else if (msg.type === "step" || msg.type === "setManual") {
+      // 手动步进控制：透传给 worker（无对战进行中时自然忽略）
+      worker?.postMessage(msg);
     }
   });
 });

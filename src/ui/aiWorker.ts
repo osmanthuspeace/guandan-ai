@@ -1,9 +1,7 @@
 /**
- * AI 对战 worker（成员 A）：在独立线程里跑 AI 对战，
- * 通过 postMessage 把牌局事件推给 UI 进程——自动跑绝不阻塞界面。
- * mode=local：本机四 AI 自对战；mode=match：联机约战（我方 AI 占 0&2，座位 1&3 等外部玩家）。
- * 一次 start = 一个 worker = 一场对决：服务端按 round 参数在同房间连打若干场
- * （每场从 2 打到过 A，场内含若干小局），全部场次打完 worker 退出。
+ * AI 对战 worker（成员 A）：独立线程跑对战，事件经 postMessage 推给 UI。
+ * mode=local 本机四 AI 自对战；mode=match 联机约战（我方 AI 占 0&2，1&3 等外部玩家）。
+ * 一次 start 打 rounds 场（每场从 2 打到过 A），全部打完退出。
  */
 import { parentPort, workerData } from "node:worker_threads";
 import { networkInterfaces } from "node:os";
@@ -13,18 +11,14 @@ import {
   fmtAntiTribute, fmtEpisodeOver, fmtEpisodeStart, fmtFinish,
   fmtGameOver, fmtPlay, fmtResult, fmtTribute,
 } from "./logFormat.js";
-import { RANKS } from "../types.js";
-
-/** 等级序号（2→A 递增），比较回退用；未知等级返回 -1 */
-const rIdx = (r: string) => (RANKS as readonly string[]).indexOf(r);
-
 interface WorkerConfig {
   url: string;
   rounds: number;
-  /** local=本机四 AI 自对战；match=联机约战（我方 AI 占 0&2，座位 1&3 等外部玩家） */
   mode?: "local" | "match";
   p02: string; // rule / rule-ns / random
   p13: string;
+  /** 开局即手动步进，座 0 每手等「下一步」，避免开局后再切换的竞态 */
+  manual?: boolean;
 }
 
 const cfg = workerData as WorkerConfig;
@@ -52,21 +46,68 @@ async function main() {
   let score: [number, number] = [0, 0]; // 本场局比分 [A队胜局数, B队胜局数]
   let gameWins: [number, number] = [0, 0]; // 大局比分 [A队胜场数, B队胜场数]
   let gameCount = 0; // 已打完的场数
-  let lastOrder: number[] = []; // 最近一局的名次（gameOver 缺 victory 时推导胜方用）
   let selfRank = "2", oppoRank = "2"; // 自己和对方当前打几
   let lastScore: [number, number] = [0, 0]; // 最近结束那一场的局比分快照（score 清零前保存，"末场胜局"用）
-  // 场边界探测：实测本服务端 gameOver 只在全部场次末尾到达一次（OpenGuanDan README 4.1.7 亦无 victory 字段），
-  // 不能靠它逐场入账。一场之内双方等级只升不降，任一队等级回退 ⇒ 上一场结束、新一场从 2 开始。
-  let prevSelf: string | null = null, prevOppo: string | null = null;
-  let resetSync = false; // 两队等级交错重置时屏蔽重复探测，直到双方都显示为 2
-  // 服务端 beginning 不带等级（探针实测：仅 myPos/levelCard/handCards），
-  // 新等级最早出现在本局"任意座位"的首个 act 里 → 开局标题推迟到那一刻打印；
-  // 期间产生的本局日志（进贡/抗贡/领出）先缓冲，标题打出后再冲刷，保证标题在最前
+  // 服务端只在全部场次末尾广播一次 gameResult，中间场结束无消息，
+  // 所以本地复刻服务端记分规则（含打A三次不过的退级惩罚）逐场入账
+  let simScores: [number, number] = [0, 0]; // 两队等级分 0..12（0="2"…12="A"）
+  let simPlayA: [number, number] = [0, 0];  // 两队打A失败次数
+  let simPrevHead: number | null = null;    // 上一局头游座位
+  let lastGameWinner: number | null = null; // 最近一场的胜方，gameResult 对账用
+  let newGamePending = false;               // 下一局是新场第 1 局
+  // beginning 不带等级，新等级要等本局首个 act 才知道，
+  // 开局标题推迟到那一刻打印，期间的日志先进缓冲区
   let pendingStart = false;
   let pendingHands: Record<number, string[]> = {};
   let episodeBuf: string[] = [];
   const logLine = (text: string) => post({ kind: "log", text });
   const emit = (text: string) => { if (pendingStart) episodeBuf.push(text); else logLine(text); };
+
+  // 手动步进：开启后，座 0 每次行动（出牌/进贡/还贡）前先等 UI 点「下一步」
+  let manual = !!cfg.manual;
+  let stepResolve: (() => void) | null = null;
+  parentPort!.on("message", (m: { type?: string; on?: boolean }) => {
+    if (m?.type === "step") {
+      const r = stepResolve;
+      stepResolve = null;
+      r?.();
+    } else if (m?.type === "setManual") {
+      manual = !!m.on;
+      // 等待中切回自动：立即放行，避免卡死
+      if (!manual && stepResolve) { stepResolve(); stepResolve = null; }
+    }
+  });
+  const seat0Gate = async (_act: unknown, chosen: [string, string, string[]]) => {
+    if (!manual) return;
+    // 把 AI 选好的动作一并推给页面：用户点「下一步」前能看到准备打的牌
+    post({ kind: "awaiting", text: fmtPlay(0, chosen) });
+    await new Promise<void>((res) => { stepResolve = res; });
+  };
+
+  /** 复刻服务端局末记分：升级、过A判场、打A惩罚。过A返回胜方(0=A队 1=B队)，否则 null */
+  const simEpisode = (order: number[]): number | null => {
+    if (order.length === 0) return null;
+    const head = order[0];
+    const wt = head & 1; // 头游队
+    const partner = (head + 2) & 3;
+    const up = order[1] === partner ? 3 : order[2] === partner ? 2 : 1;
+    const prevTeam = simPrevHead === null ? -1 : simPrevHead & 1;
+    if (prevTeam === wt && simScores[wt] === 12 && up > 1) {
+      // 过A，场结束，记分状态清零
+      simScores = [0, 0]; simPlayA = [0, 0]; simPrevHead = null;
+      return wt;
+    }
+    if (prevTeam === wt && simScores[wt] === 12) {
+      // 头游+末游：打A失败一次，满3次清零（随后还会+1）
+      if (++simPlayA[wt] >= 3) { simScores[wt] = 0; simPlayA[wt] = 0; }
+    } else if (prevTeam >= 0 && simScores[prevTeam] === 12) {
+      // 头游易主：打A队记一次失败，满3次清零
+      if (++simPlayA[prevTeam] >= 3) { simScores[prevTeam] = 0; simPlayA[prevTeam] = 0; }
+    }
+    simScores[wt] = Math.min(12, simScores[wt] + up);
+    simPrevHead = head;
+    return null;
+  };
 
   const onEvent = (seat: number) => (msg: Record<string, unknown>) => {
     if (msg.type === "act") {
@@ -76,30 +117,12 @@ async function main() {
         if (msg.oppoRank) oppoRank = msg.oppoRank as string;
       }
       if (pendingStart) {
-        // 谁第一个行动就用谁的 act 刷新等级（奇偶座位归一化到 A/B 视角）
+        // 用首个行动的 act 刷新等级，奇偶座位归一化到 A/B 视角
         const s = msg.selfRank as string | undefined;
         const o = msg.oppoRank as string | undefined;
         if (seat % 2 === 0) { if (s) selfRank = s; if (o) oppoRank = o; }
         else { if (s) oppoRank = s; if (o) selfRank = o; }
         pendingStart = false;
-        // 场边界探测：任一队等级较上一局回退 ⇒ 上一场结束，逐场入账大局、清零本场
-        if (prevSelf !== null && prevOppo !== null) {
-          if (resetSync) {
-            if (selfRank === "2" && oppoRank === "2") resetSync = false; // 双方显示已同步，解除屏蔽
-          } else if (rIdx(selfRank) >= 0 && rIdx(oppoRank) >= 0 &&
-                     (rIdx(selfRank) < rIdx(prevSelf) || rIdx(oppoRank) < rIdx(prevOppo))) {
-            const w = lastOrder.length > 0 ? lastOrder[0] % 2 : null; // 胜方 = 末局头游队（过A必为末局头游队）
-            if (w === 0 || w === 1) gameWins[w]++;
-            gameCount++;
-            lastScore = [...score];
-            score = [0, 0];
-            episode = 1; // 新一场的第 1 局
-            post({ kind: "gameOver", victory: w, games: [...gameWins], game: gameCount });
-            logLine(fmtGameOver(gameCount, w, [...gameWins]));
-            resetSync = !(selfRank === "2" && oppoRank === "2"); // 双方同时回 2 则无需屏蔽
-          }
-        }
-        prevSelf = selfRank; prevOppo = oppoRank;
         post({ kind: "start", hands: { ...pendingHands }, episode, selfRank, oppoRank });
         logLine(fmtEpisodeStart(episode, selfRank, oppoRank));
         for (const t of episodeBuf) logLine(t);
@@ -113,12 +136,13 @@ async function main() {
       hands[seat] = msg.handCards as string[];
       dealt.add(seat);
       if (seat === 0) {
-        episode++;
+        episode = newGamePending ? 1 : episode + 1; // 新一场从第 1 局重排
+        newGamePending = false;
         finished = [];
         rests = [27, 27, 27, 27];
       }
       if (dealt.size === localSeatCount) {
-        // 手牌收齐，但等级要等本局首个 act 才是新值 → 先暂存，延后展示
+        // 手牌收齐先暂存，等首个 act 拿到新等级再展示
         pendingHands = { ...hands };
         pendingStart = true;
         dealt = new Set();
@@ -148,25 +172,43 @@ async function main() {
     } else if (stage === "episodeOver" && seat === 0) {
       const order = (msg.order as number[]) ?? [];
       if (order.length > 0) score[order[0] % 2]++; // 头游所在队赢下该局（0/2=A, 1/3=B）
-      lastOrder = order;
       post({ kind: "episodeOver", order, curRank: msg.curRank, score: [...score] });
       logLine(fmtEpisodeOver(order, [...score]));
-    } else if (stage === "gameOver" && seat === 0) {
-      // 本服务端实测：gameOver 只在全部场次末尾到达一次（且无 victory 字段）。
-      // 逐场入账由等级回退探测完成，这里只补记最后一场（已达场数上限则跳过，防重复）
-      const rawV = msg.victory;
-      const v = typeof rawV === "number" ? rawV % 2
-        : lastOrder.length > 0 ? lastOrder[0] % 2 : null;
-      if (gameCount < cfg.rounds) {
-        if (v === 0 || v === 1) gameWins[v]++;
+      // 过A则场结束：入账大局，本场比分清零
+      const gw = simEpisode(order);
+      if (gw !== null) {
+        gameWins[gw]++;
         gameCount++;
+        lastGameWinner = gw;
+        lastScore = [...score];
+        score = [0, 0];
+        newGamePending = true;
+        post({ kind: "gameOver", victory: gw, games: [...gameWins], game: gameCount });
+        logLine(fmtGameOver(gameCount, gw, [...gameWins]));
       }
-      lastScore = [...score]; // 先快照"末场胜局"，再清零
-      score = [0, 0];
-      episode = 0;
-      post({ kind: "gameOver", victory: v, games: [...gameWins], game: gameCount });
-      logLine(fmtGameOver(gameCount, v, [...gameWins]));
+    } else if (stage === "gameResult" && seat === 0) {
+      // 服务端权威终局，只在全部场次末尾广播一次
+      // 与本地入账对账：漏记则补，记错则以服务端为准
+      const v = msg.victory;
+      if (v === 0 || v === 1) {
+        if (gameCount < cfg.rounds) {
+          gameWins[v]++;
+          gameCount++;
+          lastGameWinner = v;
+          lastScore = [...score];
+          score = [0, 0];
+          post({ kind: "gameOver", victory: v, games: [...gameWins], game: gameCount });
+          logLine(fmtGameOver(gameCount, v, [...gameWins]));
+        } else if (lastGameWinner !== null && lastGameWinner !== v) {
+          gameWins[lastGameWinner]--;
+          gameWins[v]++;
+          lastGameWinner = v;
+          post({ kind: "gameOver", victory: v, games: [...gameWins], game: gameCount });
+          logLine(`对账修正：服务端判定末场胜方为${v === 0 ? "A" : "B"}队，大局已按服务端纠正`);
+        }
+      }
     }
+    // gameOver 紧随 gameResult 广播，bot 收到 gameResult 即断连，这里收不到
   };
 
   let resolveRoom!: (id: number) => void;
@@ -177,6 +219,7 @@ async function main() {
     url: cfg.url, userId: `ui_${tag}_0`, policy: makePolicy(seats[0]),
     round: cfg.rounds, seatNum: 0,
     onRoomCreated: (id) => resolveRoom(id), onEvent: onEvent(0),
+    beforeAct: seat0Gate, // 仅座 0 挂手动闸门，其他座位全自动
   });
   const roomId = await roomReady;
   const bots = [first];
@@ -198,10 +241,10 @@ async function main() {
     }
   }
   const results = await Promise.all(bots);
-  // 兜底：gameOver 完全没收到时按最终场胜方补记一场；否则最后一场已在 gameOver 分支入账（防重复）
+  // 兜底：异常终止没打满场数时按服务端 victory 补记一场
   const finalV = results[0].victory;
   if ((finalV === 0 || finalV === 1) && gameCount < cfg.rounds) {
-    gameWins[finalV % 2]++;
+    gameWins[finalV]++;
     gameCount++;
     lastScore = [...score];
   }

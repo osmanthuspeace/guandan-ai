@@ -1,8 +1,8 @@
 /**
  * 末局搜索（成员 C）。
- * 三步：猜牌（约束采样：历史 PASS 推断的持牌上限过滤）
- * → 每种假设下拟人 rollout 到底（每个座位都用牌理同款评分器从自己的视角选招）
- * → 得票最高者定案。
+ * 三步：猜牌（约束采样：历史 PASS 推断的持牌上限过滤）、
+ * 每种假设下拟人 rollout 到底（每个座位都用牌理同款评分器从自己的视角选招）、
+ * 得票最高者定案。
  *
  * 简化假设：
  * - 模拟器只生成 单/对/三张/三带二/炸弹/四王，不生成顺子类长牌型（控制分支因子）；
@@ -18,10 +18,8 @@ import { HandEvaluator } from "../policy/evaluate.js";
 import { scorePlayAction } from "../policy/actionEval.js";
 import { countViolations, extractCaps } from "./constraints.js";
 
-// ---------------------------------------------------------------------------
-// 采样：把未见牌分给其他三家（按各自剩余张数）。
-// 有历史 PASS 约束时做拒绝采样：最多重试若干次，取违反约束最少的分法。
-// ---------------------------------------------------------------------------
+// 采样：把未见牌按各自剩余张数分给其他三家
+// 有历史 PASS 约束时做拒绝采样：多次重试，取违反约束最少的分法
 
 const SAMPLE_TRIES = 40;
 
@@ -62,9 +60,7 @@ export function sampleHands(
   return best!; // 约束互相打架时取违约最少的分法（best-effort）
 }
 
-// ---------------------------------------------------------------------------
 // 炸弹等级：4炸40 < 5炸50 < 同花顺55 < 6炸60 ... < 四王90
-// ---------------------------------------------------------------------------
 
 function bombLevel(a: Action): number {
   if (a[0] === "FourKings") return 90;
@@ -88,9 +84,7 @@ export function canBeat(a: Action, b: Action | null, level: string): boolean {
   return rankValue(a[1], level) > rankValue(b[1], level);
 }
 
-// ---------------------------------------------------------------------------
-// 模拟器：简化合法动作生成
-// ---------------------------------------------------------------------------
+// 模拟器：简化的合法动作生成（不生成顺子类长牌型，控制分支因子）
 
 export function genMoves(hand: CardLabel[], level: string, greater: Action | null): Action[] {
   const byRank = groupByRank(hand.filter((c) => c[1] !== "B" && c[1] !== "R"));
@@ -123,9 +117,7 @@ export function genMoves(hand: CardLabel[], level: string, greater: Action | nul
   return legal;
 }
 
-// ---------------------------------------------------------------------------
-// 推算：拟人 rollout（PIMC）——所有座位用同一套牌理评分器选招，推演到底
-// ---------------------------------------------------------------------------
+// 推算：拟人 rollout（PIMC），所有座位用同一套牌理评分器选招，推演到底
 
 interface SimState {
   hands: CardLabel[][];
@@ -160,7 +152,7 @@ function nextActive(s: SimState, from: number): number {
 }
 
 /**
- * me 行动后的状态推进：登记出完 → 若其余活跃玩家全 PASS 则一轮结束，
+ * me 行动后的状态推进：登记出完；若其余活跃玩家全 PASS 则一轮结束，
  * 由领先者领出；领先者已出完则对家接风（对家也出完则顺时针顺延）。
  */
 function afterPlay(ns: SimState, me: number): void {
@@ -198,11 +190,8 @@ function applyMove(s: SimState, me: number, m: Action): SimState {
 }
 
 /**
- * 拟人 rollout：从当前局面推演到底，每个座位都用牌理同款评分器
- * （scorePlayAction，含让队友/拦截/救炸等局面修正）从自己的视角选招。
- * 与 paranoid 搜索的本质区别：对手不再"透视"我的手牌打最坏情况——
- * 那是系统性悲观偏差；拟人推演消的是偏差而非噪声，且单次成本 O(步数)，
- * 同样的时间预算能跑多一个数量级的样本数，让均值收敛。
+ * 拟人 rollout：推演到底，每个座位都用牌理同款评分器（scorePlayAction）
+ * 从自己的视角选招。对手不"透视"我方手牌，避免 paranoid 搜索的悲观偏差。
  */
 export function rollout(
   s: SimState, level: string, rootPos: number,
@@ -238,9 +227,7 @@ export function rollout(
   return (opp - mine) * 2;
 }
 
-// ---------------------------------------------------------------------------
-// Policy：采样 K 次 × 候选动作逐个推算，平均收益最高者胜出
-// ---------------------------------------------------------------------------
+// Policy：采样 K 次，候选动作逐个推算，平均收益最高者胜出
 
 export interface EndgameOptions {
   samples?: number;      // 猜牌次数基数，默认 24（未见牌越少实际采样越多）

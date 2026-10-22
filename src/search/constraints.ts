@@ -59,7 +59,6 @@ export function extractCaps(state: GameState): (HandCaps | null)[] {
             idx: i,
           });
         }
-        // 顺子/三带二等长牌型跳过（检测成本高、收益低）
       }
     } else {
       standAction = action;

@@ -26,7 +26,7 @@ export interface EpisodeOverMsg {
   curRank: string;
   score: [number, number];
 }
-/** 单场（大场）结束：worker 按"等级回退"逐场探测入账（服务端 gameOver 仅在全部场次末尾到达一次） */
+/** 一场（大场）结束，大局比分更新 */
 export interface GameOverMsg {
   kind: "gameOver";
   victory: number | null;   // 本场胜方 0=A队 1=B队
@@ -42,6 +42,8 @@ export interface ResultMsg {
 }
 export interface LogMsg { kind: "log"; text: string; }
 export interface ErrorMsg { kind: "error"; text: string; }
+/** 手动模式下，座 0 已选好动作、等待用户点「下一步」（text=将出的牌，如"座0·A  三带二  ♠4 ♦4 ♦4 ♥7 ♠7"） */
+export interface AwaitingMsg { kind: "awaiting"; text: string; }
 /** 联机约战：房间已创建，等待外部玩家加入座位 1&3 */
 export interface MatchInfoMsg {
   kind: "match";
@@ -51,7 +53,7 @@ export interface MatchInfoMsg {
 
 export type ServerMsg =
   | StartMsg | PlayMsg | TributeMsg | EpisodeOverMsg | GameOverMsg
-  | ResultMsg | LogMsg | ErrorMsg | MatchInfoMsg;
+  | ResultMsg | LogMsg | ErrorMsg | MatchInfoMsg | AwaitingMsg;
 
 /** 页面状态 */
 export interface LogLine { id: number; text: string; }
@@ -78,4 +80,10 @@ export interface UiState {
   result: { victory: number | null; episodes: number; score: [number, number] } | null;
   /** 联机约战信息（房间号 + 局域网地址），非约战模式为 null */
   matchInfo: { roomId: number; urls: string[] } | null;
+  /** 手动步进开关（仅作用于座 0） */
+  manual: boolean;
+  /** 座 0 正等待「下一步」点击 */
+  awaiting: boolean;
+  /** 等待中时，座 0 准备打出的牌（格式化文本） */
+  awaitingText: string | null;
 }

@@ -5,7 +5,7 @@ import { LogPanel } from "./components/LogPanel";
 
 function statusTextOf(s: ReturnType<typeof useGameSocket>["state"]): string {
   switch (s.status) {
-    case "running": return "对战中…";
+    case "running": return s.awaiting ? "等待点击「下一步」…" : "对战中…";
     case "stopped": return "已停止";
     case "error": return "出错";
     case "finished": {
@@ -18,14 +18,19 @@ function statusTextOf(s: ReturnType<typeof useGameSocket>["state"]): string {
 }
 
 export default function App() {
-  const { state, startRun, stopRun } = useGameSocket();
+  const { state, startRun, stopRun, setManual, step } = useGameSocket();
   return (
     <div className="app">
       <ControlBar
         statusText={statusTextOf(state)}
         running={state.status === "running"}
+        manual={state.manual}
+        awaiting={state.awaiting}
+        awaitingText={state.awaitingText}
         onStart={startRun}
         onStop={stopRun}
+        onSetManual={setManual}
+        onStep={step}
       />
       {state.matchInfo && (
         <div className="match-banner">
